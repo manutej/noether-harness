@@ -1,0 +1,13 @@
+{
+  "name": "noether",
+  "owner": {
+    "name": "manutej"
+  },
+  "plugins": [
+    {
+      "name": "noether-harness",
+      "source": ".",
+      "description": "Conservation gate for long-horizon coding agents, with chainable harnesses."
+    }
+  ]
+}

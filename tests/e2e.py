@@ -1,0 +1,249 @@
+"""End-to-end test of the runtime on real git repos. Each scenario prints PASS or FAIL."""
+import json, os, shutil, subprocess as sp, sys, tempfile
+from pathlib import Path
+SRC = sys.argv[1] if len(sys.argv) > 1 else str(Path(__file__).resolve().parent.parent / "scripts" / "noether.py")
+fails = []
+def ck(name, cond, extra=""):
+    print(("PASS " if cond else "FAIL ") + name, extra if not cond else "")
+    if not cond: fails.append(name)
+def sh(c, cwd): return sp.run(c, shell=True, cwd=cwd, text=True, capture_output=True)
+def repo():
+    d = tempfile.mkdtemp(prefix="noe-")
+    os.makedirs(f"{d}/lib"); os.makedirs(f"{d}/tests")
+    W = lambda p, s: Path(d, p).write_text(s)
+    W("lib/__init__.py", "")
+    W("lib/money.py", "def total(items, tax_rate=0.0):\n    return round(sum(items) * (1 + tax_rate), 2)\n")
+    W("lib/invoice.py", "from lib.money import total\n\ndef invoice(items):\n    return {'total': total(items)}\n")
+    W("tests/test_money.py", "from lib.money import total\n\ndef test_total():\n    assert total([1, 2]) == 3\n\ndef test_tax():\n    assert total([10], 0.5) == 15\n")
+    W("tests/test_invoice.py", "from lib.invoice import invoice\n\ndef test_invoice():\n    assert invoice([1])['total'] == 1\n")
+    W("tests/test_red.py", "def test_preexisting_failure():\n    assert False\n")
+    W("conftest.py", "import sys, os\nsys.path.insert(0, os.path.dirname(__file__))\n")
+    for c in ("git init -q -b main", "git config user.email a@b", "git config user.name a", "git add -A", "git commit -q -m init"): sh(c, d)
+    return d
+N = "python3 .noether/noether.py"
+def init(d):
+    r = sh(f"python3 -I {SRC} init --claude", d); assert r.returncode == 0, r.stdout + r.stderr
+    r = sh(f"{N} commit -m 'noether: init'", d); assert r.returncode == 0, r.stdout + r.stderr
+    return d
+def W(d, p, s): Path(d, p).write_text(s)
+def add_unit(d, uid="u1", proof="true", extra=""): return sh(f"{N} unit add {uid} --goal 'do thing' --proof '{proof}' {extra}", d)
+def finish(d, uid="u1", s="acceptance=.8,maintainable=.8,test_honesty=.8", by="e1"):
+    sh(f"{N} judge --unit {uid} --by {by} --scores {s}", d); return sh(f"{N} done --unit {uid}", d)
+
+d = init(repo())
+h = json.load(open(f"{d}/.noether/harness.json"))
+ck("init detects tests, api, secrets, weaken", {"tests", "public_api", "secrets", "tests_not_weakened"} <= {c["id"] for c in h["checks"]})
+ck("pre-existing failing test does not block", sh(f"{N} gate", d).returncode == 0)
+b = json.load(open(f"{d}/.noether/baseline.json"))
+ck("baseline excludes the failing test", not any("preexisting" in t for t in b["q"]["tests"]) and len(b["q"]["tests"]) == 3)
+ck("claude hooks installed", "noether.py" in Path(d, ".claude/settings.json").read_text())
+
+# unit happy path, with progress on a pure refactor
+add_unit(d, proof="grep -q _rounded lib/money.py")
+W(d, "lib/money.py", "def _rounded(x):\n    return round(x, 2)\n\ndef total(items, tax_rate=0.0):\n    return _rounded(sum(items) * (1 + tax_rate))\n")
+ck("clean refactor gates", sh(f"{N} gate", d).returncode == 0)
+r = sh(f"{N} done --unit u1", d); ck("done refuses without an evaluator", r.returncode == 1 and "evaluator" in r.stdout, r.stdout)
+r = finish(d); ck("refactor certified via proof, not a progress proxy", r.returncode == 0, r.stdout + r.stderr)
+u = json.load(open(f"{d}/.noether/units/u1.json")); ck("receipt written", u["receipt"]["decision"] == "PASSED" and "tests" in u["receipt"]["claims"])
+ck("status --done", sh(f"{N} status --done", d).returncode == 0)
+
+# gaming
+add_unit(d, "u2")
+W(d, "tests/test_money.py", "from lib.money import total\n\ndef test_total():\n    assert total([1, 2]) == 3\n")
+r = sh(f"{N} gate", d); ck("deleting a test is vetoed", r.returncode == 1 and "lost" in r.stdout, r.stdout)
+W(d, "tests/test_money.py", "from lib.money import total\n\ndef test_total():\n    assert total([1, 2]) == 3\n\ndef test_tax():\n    total([10], 0.5)\n")
+r = sh(f"{N} gate", d); ck("removing an assertion is vetoed", r.returncode == 1 and "tests_not_weakened" in r.stdout, r.stdout)
+sh("git checkout tests", d)
+W(d, "tests/test_money.py", Path(d, "tests/test_money.py").read_text().replace("def test_tax", "import pytest\n@pytest.mark.skip\ndef test_tax"))
+ck("skip marker vetoed", sh(f"{N} gate", d).returncode == 1)
+sh("git checkout tests", d)
+W(d, "lib/money.py", "def total(items, rate=0.0):\n    return round(sum(items) * (1 + rate), 2)\n")
+r = sh(f"{N} gate", d); ck("api change vetoed", r.returncode == 1 and "public_api" in r.stdout, r.stdout)
+ck("commit refused while rejected", sh(f"{N} commit -m x", d).returncode == 1)
+sh("git add -A", d); ck("plain git commit is blocked", sh("git commit -m sneak", d).returncode != 0)
+sh("git reset -q; git checkout lib", d)
+W(d, ".noether/harness.json", Path(d, ".noether/harness.json").read_text().replace('"tests_not_weakened"', '"tnw"'))
+r = sh(f"{N} gate", d); ck("harness tampering detected", r.returncode == 1 and "integrity" in r.stdout, r.stdout)
+sh("git checkout .noether/harness.json", d)
+W(d, "lib/k.py", 'API_KEY = "abcd1234abcd1234abcd1234"\n')
+r = sh(f"{N} gate", d); ck("secret is a hard stop", r.returncode == 2 and "secrets" in r.stdout, r.stdout)
+os.remove(f"{d}/lib/k.py")
+
+# typed grant
+W(d, "tests/test_money.py", "from lib.money import total\n\ndef test_total():\n    assert total([1, 2]) == 3\n")
+sh(f"{N} grant --unit u2 tests --allow 'tests.test_money::test_tax' --reason 'user removed tax'", d)
+r = sh(f"{N} gate --unit u2", d)
+ck("grant excuses only the named item, but weaken still fires", r.returncode == 1 and "tests_not_weakened" in r.stdout and '"tests"' not in r.stdout, r.stdout)
+sh(f"{N} grant --unit u2 tests_not_weakened --allow 'tests/test_money.py*' --reason 'user removed tax'", d)
+ck("second typed grant clears it", sh(f"{N} gate --unit u2", d).returncode == 0)
+r = finish(d, "u2"); ck("granted unit completes", r.returncode == 0, r.stdout + r.stderr)
+ck("grant recorded in receipt", json.load(open(f"{d}/.noether/units/u2.json"))["receipt"]["grants"])
+b = json.load(open(f"{d}/.noether/baseline.json")); ck("dropped test leaves the baseline", not any("test_tax" in t for t in b["q"]["tests"]))
+ck("secrets cannot be granted", sh(f"{N} unit add u3 --goal g; {N} grant --unit u3 secrets --allow '*' --reason x", d).returncode != 0)
+
+# judge escalation and saturation
+W(d, "lib/a.py", "A = 1\n")
+ck("low axis rejects", finish(d, "u3", "acceptance=.9,maintainable=.3,test_honesty=.9", "e1").returncode == 1)
+sh(f"{N} judge --unit u3 --by e2 --scores acceptance=.9,maintainable=.9,test_honesty=.9", d)
+r = sh(f"{N} done --unit u3", d); ck("after a judged failure two samples are needed", r.returncode == 1 and "need 2" in r.stdout, r.stdout)
+r = sh(f"{N} judge --unit u3 --by e2 --scores acceptance=.9,maintainable=.9,test_honesty=.9", d); ck("same evaluator cannot resample", r.returncode != 0)
+sh(f"{N} judge --unit u3 --by e3 --scores acceptance=.9,maintainable=.9,test_honesty=.9", d)
+ck("two fresh samples pass", sh(f"{N} done --unit u3", d).returncode == 0)
+
+# ratchet: eps bounds cumulative drift
+d2 = init(repo())
+h = json.load(open(f"{d2}/.noether/harness.json"))
+Path(d2, "score.txt").write_text("100\n")
+sh("git add -A", d2)
+h["checks"].append({"id": "cov", "class": "min", "cmd": "cat score.txt", "mode": "veto", "eps": 1.0}); Path(d2, ".noether/harness.json").write_text(json.dumps(h))
+b = json.load(open(f"{d2}/.noether/baseline.json")); b["q"]["cov"] = 100.0; Path(d2, ".noether/baseline.json").write_text(json.dumps(b))
+sh(f"{N} rehash", d2); sh(f"{N} commit -m c0", d2)
+walk, stopped = [], None
+for v in (99.5, 99.0, 98.5, 98.0):
+    Path(d2, "score.txt").write_text(f"{v}\n")
+    if sh(f"{N} commit -m c{v}", d2).returncode: stopped = v; break
+    walk.append(v)
+ck("slow drift stopped at eps below the high-water mark", stopped == 98.5 and walk == [99.5, 99.0], (walk, stopped))
+Path(d2, "score.txt").write_text("99\n")
+
+# flaky test: baseline flake is excused per item; real regression is not
+d3 = repo()
+W(d3, "tests/test_flaky.py", "import random\n\ndef test_coin():\n    assert random.random() < 0.5\n")
+sh("git add -A; git commit -q -m flaky", d3)
+init(d3); fl_b = json.load(open(f"{d3}/.noether/baseline.json"))["q"]["tests"]
+seen = False
+for i in range(12):
+    W(d3, "lib/x.py", f"X = {i}\n")
+    r = sh(f"{N} commit -m c{i}", d3)
+    if r.returncode: r = sh(f"{N} gate --fresh && {N} commit -m c{i}", d3)  # a rare false veto is cheap: re-gate
+    if r.returncode: seen = True; ck("flaky baseline test does not veto", False, r.stdout); break
+ck("flaky test never vetoed across 12 commits", not seen)
+
+# learning: shadow, evidence, protection
+d = init(repo())
+sh(f"{N} learn add no_todo --cls none --cmd 'grep -rn TODO lib || true' --why 'a TODO shipped'", d)
+W(d, "lib/z.py", "# TODO later\nZ = 1\n")
+ck("shadow check does not veto", sh(f"{N} gate", d).returncode == 0)
+ck("shadow fire logged", "shadow_fire" in Path(d, ".noether/log.jsonl").read_text())
+ck("promote refused on no evidence", sh(f"{N} learn promote no_todo", d).returncode != 0)
+for _ in range(5): sh(f"{N} learn confirm no_todo --real yes", d)
+ck("promote allowed at 5/5", sh(f"{N} learn promote no_todo", d).returncode == 0)
+ck("promoted check vetoes", sh(f"{N} gate --fresh", d).returncode == 1)
+os.remove(f"{d}/lib/z.py")
+ck("protected check cannot be retired", sh(f"{N} learn retire tests", d).returncode != 0)
+ck("unprotected check can be retired", sh(f"{N} learn retire no_todo", d).returncode == 0)
+
+# hooks
+def hook(d, ev): return sh(f"echo '{json.dumps(dict(ev, cwd=d))}' | {N} hook", d).stdout
+d = init(repo())
+ck("hook denies --no-verify", "deny" in hook(d, {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git commit --no-verify -m x"}}))
+ck("hook asks on grant", '"ask"' in hook(d, {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "python3 .noether/noether.py grant tests"}}))
+ck("hook denies harness edits", "deny" in hook(d, {"hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": {"file_path": d + "/.noether/harness.json"}}))
+ck("hook allows ordinary commands", hook(d, {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git status"}}) == "")
+ck("context reset is recoverable", "HARNESS" in hook(d, {"hook_event_name": "SessionStart", "source": "compact"}))
+
+# chain: semantic conflict between parallel branches that pass alone
+def stage_finish(p, s):
+    r = sh(f"{N} commit -m work", p); assert r.returncode == 0, r.stdout + r.stderr
+    sh(f"{N} judge --unit {s} --by ev-{s} --scores acceptance=.9,maintainable=.9,test_honesty=.9", p)
+    return sh(f"{N} done", p)
+d = init(repo())
+chain = {"name": "c1", "flow": "(tax | inv) ; review", "budget": {"attempts": 40},
+  "agents": {"coder": {"model": "inherit", "skills": ["noether-harness"]}},
+  "stages": {"tax": {"agent": "coder", "goal": "default tax", "proof": "python3 -c 'import lib.money as m; assert m.total([10])==12'", "writes": ["lib/money.py", "tests/test_money.py"], "provides": ["taxed"], "grants": [{"check": "public_api", "allow": ["lib.money.total*"], "reason": "chain grant", "axis": False}, {"check": "tests", "allow": ["tests.test_money::test_total"], "reason": "chain grant", "axis": False}, {"check": "tests_not_weakened", "allow": ["tests/test_money.py*"], "reason": "chain", "axis": False}]},
+             "inv": {"agent": "coder", "goal": "new caller", "proof": "python3 -c 'import lib.bill as b; assert b.bill([10])==10'", "writes": ["lib/bill.py", "tests/test_bill.py"]},
+             "review": {"agent": "coder", "goal": "doc", "proof": "test -f NOTES.md", "writes": ["NOTES.md"], "needs": ["taxed"]}}}
+W(d, "lib/invoice.py", "from lib.money import total\n\ndef invoice(items):\n    return {'total': total(items, tax_rate=0.0)}\n")
+Path(d, "chain.json").write_text(json.dumps(chain)); sh("git add -A", d); sh(f"{N} commit -m chain", d)
+ck("chain well typed", sh(f"{N} chain check chain.json", d).returncode == 0)
+r = sh(f"{N} chain next chain.json", d); nx = json.loads(r.stdout); ck("parallel stages ready first", nx["start"] == ["tax", "inv"], r.stdout)
+ck("downstream waits", "waits on" in sh(f"{N} chain start chain.json review", d).stderr)
+sh(f"{N} chain start chain.json tax", d); sh(f"{N} chain start chain.json inv", d)
+wt = lambda s, n="c1": Path(d, ".noether/run/wt", n, s)
+W(wt("tax"), "lib/money.py", "def total(items, tax_rate=0.2):\n    return round(sum(items) * (1 + tax_rate), 2)\n")
+W(wt("tax"), "tests/test_money.py", "from lib.money import total\n\ndef test_total2():\n    assert total([1, 2]) == 3.6\n\ndef test_tax():\n    assert total([10], 0.5) == 15\n")
+W(wt("inv"), "lib/bill.py", "from lib.money import total\n\n\ndef bill(items):\n    return total(items)\n")
+W(wt("inv"), "tests/test_bill.py", "from lib.bill import bill\n\n\ndef test_bill():\n    assert bill([10]) == 10\n")
+r1 = stage_finish(wt("tax"), "tax"); r2 = stage_finish(wt("inv"), "inv")
+ck("both branches certify alone", r1.returncode == 0 and r2.returncode == 0, r1.stdout + r1.stderr + r2.stdout + r2.stderr)
+before = sh("git rev-parse noether/c1/int", d).stdout
+r = sh(f"{N} chain integrate chain.json", d); ck("semantic conflict caught at the join", r.returncode == 1 and "SEMANTIC" in r.stdout, r.stdout + r.stderr)
+ck("failed integration is atomic", sh("git rev-parse noether/c1/int", d).stdout == before)
+r = sh(f"{N} chain integrate chain.json --only tax", d); ck("the sound subset integrates", r.returncode == 0, r.stdout + r.stderr)
+r = sh(f"{N} chain start chain.json inv --reopen", d)
+W(wt("inv"), "lib/bill.py", "from lib.money import total\n\n\ndef bill(items):\n    return total(items, tax_rate=0.0)\n")
+r3 = stage_finish(wt("inv"), "inv"); ck("reopened stage certifies on the integrated base", r3.returncode == 0, r3.stdout + r3.stderr)
+r = sh(f"{N} chain integrate chain.json", d); ck("repaired stage integrates", r.returncode == 0, r.stdout + r.stderr)
+r = json.loads(sh(f"{N} chain next chain.json", d).stdout); ck("resume from disk sees progress", r["start"] == ["review"] and r["stages"]["tax"] == "integrated", r)
+sh(f"{N} chain start chain.json review", d); W(wt("review"), "NOTES.md", "ok\n"); ck("seq stage certifies", stage_finish(wt("review"), "review").returncode == 0)
+ck("last group integrates", sh(f"{N} chain integrate chain.json", d).returncode == 0)
+r = sh(f"{N} chain land chain.json", d); ck("land fast-forwards the target", r.returncode == 0, r.stdout + r.stderr)
+ck("landed code present", Path(d, "NOTES.md").exists() and Path(d, "lib/bill.py").exists())
+
+# typing refusals
+def badchain(mut):
+    c = json.loads(json.dumps(chain)); c["name"] = "bad"; mut(c); Path(d, "b.json").write_text(json.dumps(c)); return sh(f"{N} chain check b.json", d)
+ck("overlapping parallel writes refused", "overlap" in badchain(lambda c: c["stages"]["inv"]["writes"].append("lib/money.py")).stdout)
+ck("read of a sibling's write refused", "reads what" in badchain(lambda c: c["stages"]["inv"].__setitem__("reads", ["lib/money.py"])).stdout)
+ck("unmet need refused", "no earlier stage" in badchain(lambda c: c["stages"]["inv"].__setitem__("needs", ["ghost"])).stdout)
+ck("budget overrun refused", "over the chain budget" in badchain(lambda c: c["budget"].__setitem__("attempts", 5)).stdout)
+ck("child cannot loosen", "only add" in badchain(lambda c: c["stages"]["inv"].__setitem__("harness", {"remove": ["tests"]})).stdout)
+ck("chain cannot excuse secrets", "cannot be excused" in badchain(lambda c: c["stages"]["inv"].__setitem__("grants", [{"check": "secrets", "allow": ["*"], "reason": "x"}])).stdout)
+os.remove(f"{d}/b.json")
+
+# hard stop propagates to siblings
+d = init(repo())
+ch = {"name": "c2", "flow": "a | b", "stages": {"a": {"goal": "g", "proof": "true", "writes": ["lib/a*"]}, "b": {"goal": "g", "proof": "true", "writes": ["lib/b*"]}}}
+Path(d, "c.json").write_text(json.dumps(ch)); sh(f"{N} commit -m c", d)
+sh(f"{N} chain start c.json a; {N} chain start c.json b", d)
+A, B = (Path(d, ".noether/run/wt/c2", s) for s in "ab")
+W(A, "lib/a.py", 'TOKEN = "abcd1234abcd1234abcd1234"\n')
+ck("stage hard stop", sh(f"{N} gate", A).returncode == 2)
+W(B, "lib/b.py", "B = 1\n")
+r = sh(f"{N} gate", B); ck("sibling sees the hard stop", r.returncode == 2 and "sibling" in r.stdout, r.stdout)
+ck("chain refuses to go on", sh(f"{N} chain next c.json", d).returncode == 2)
+
+# nesting: a stage whose worker is a chain; parent claims only its own proof
+d = init(repo())
+inner = {"name": "in1", "flow": "x ; y", "budget": {"attempts": 10}, "stages": {"x": {"goal": "g", "proof": "test -f lib/x1.py", "writes": ["lib/x1.py"], "attempts": 5}, "y": {"goal": "g", "proof": "test -f lib/y1.py", "writes": ["lib/y1.py"], "attempts": 5}}}
+outer = {"name": "out1", "flow": "p", "stages": {"p": {"goal": "g", "proof": "test -f lib/x1.py && test -f lib/y1.py", "writes": ["lib/x1.py", "lib/y1.py"], "chain": "inner.json", "attempts": 12}}}
+Path(d, "inner.json").write_text(json.dumps(inner)); Path(d, "outer.json").write_text(json.dumps(outer)); sh(f"{N} commit -m c", d)
+ck("nested chain typechecks", sh(f"{N} chain check outer.json", d).returncode == 0)
+sh(f"{N} chain start outer.json p", d); P = Path(d, ".noether/run/wt/out1/p")
+for s, f in (("x", "lib/x1.py"), ("y", "lib/y1.py")):
+    r = sh(f"{N} chain start inner.json {s}", P); ck(f"nested start {s}", r.returncode == 0, r.stdout + r.stderr)
+    q = P / ".noether/run/wt/in1" / s; W(q, f, "V = 1\n"); r = stage_finish(q, s); ck(f"nested stage {s} certifies", r.returncode == 0, r.stdout + r.stderr)
+    r = sh(f"{N} chain integrate inner.json", P); ck(f"nested integrate {s}", r.returncode == 0, r.stdout + r.stderr)
+r = sh(f"{N} chain land inner.json", P); ck("nested chain lands in the stage", r.returncode == 0, r.stdout + r.stderr)
+sh(f"{N} judge --unit p --by evp --scores acceptance=.9,maintainable=.9,test_honesty=.9", P); r = sh(f"{N} done", P); ck("parent stage certifies with its own proof", r.returncode == 0, r.stdout + r.stderr)
+ck("parent receipt carries child evidence", len(json.load(open(sh("git rev-parse --git-common-dir", P).stdout.strip() if False else Path(d, ".git/noether/out1/receipts/p.json")))["evidence"]) == 2)
+ck("parent integrates", sh(f"{N} chain integrate outer.json", d).returncode == 0)
+# regressions from the red team, blind user and maths review
+d = init(repo()); add_unit(d, "p1", proof="echo leak > tests/snap.txt")
+W(d, "lib/a2.py", "A = 1\n"); sh(f"{N} judge --unit p1 --by e --scores acceptance=.9,maintainable=.9,test_honesty=.9", d)
+r = sh(f"{N} done --unit p1", d); ck("proof that writes files cannot land them", r.returncode != 0 and "changed" in r.stderr, r.stdout + r.stderr)
+ck("failed commit leaves the unit open", json.load(open(f"{d}/.noether/units/p1.json"))["status"] == "open")
+d = repo(); W(d, ".gitignore", ".env\n"); W(d, ".env", "1\n"); W(d, "lib/cfg.py", "import pathlib\n\n\ndef rate():\n    return int(pathlib.Path('.env').read_text())\n"); W(d, "tests/test_cfg.py", "from lib.cfg import rate\n\n\ndef test_rate():\n    assert rate() == 1\n"); sh("git add -A; git commit -q -m cfg", d); init(d)
+W(d, "lib/cfg.py", "import pathlib\n\n\ndef rate():\n    return 2 + int(pathlib.Path('.env').read_text())\n")
+ck("deterministic failure is not excused as flaky", sh(f"{N} gate --fresh", d).returncode == 1)
+d = init(repo()); W(d, "lib/café.py", 'TOKEN = "AKIAABCDEFGHIJKLMNOP"\n'); ck("non-ascii path is scanned", sh(f"{N} gate", d).returncode == 2)
+d = init(repo()); W(d, "lib/money.py", "def total(items, tax_rate=0.0, start=0):\n    return round(sum(items) * (1 + tax_rate), 2) + start\n"); ck("adding an optional parameter passes", sh(f"{N} gate", d).returncode == 0)
+W(d, "lib/money.py", "def total(items, tax_rate):\n    return round(sum(items) * (1 + tax_rate), 2)\n"); ck("making a parameter required is vetoed", sh(f"{N} gate", d).returncode == 1)
+sh("git checkout lib", d)
+sh(f"{N} unit add a --goal g --scope 'lib/x*' --scope 'lib/y*'", d); ck("repeated --scope accumulates", len(json.load(open(f"{d}/.noether/units/a.json"))["scope"]) == 2)
+W(d, "NOTES.txt", "x\n"); ck("commit outside any unit works", sh(f"{N} commit --unit - -m n", d).returncode == 0)
+d = init(repo()); ch = {"name": "c9", "flow": "a", "stages": {"a": {"goal": "g", "proof": "true", "writes": ["lib/a.py"]}}}
+Path(d, "c.json").write_text(json.dumps(ch)); sh(f"{N} commit -m c", d); sh(f"{N} chain start c.json a", d); A = Path(d, ".noether/run/wt/c9/a")
+W(A, "lib/money.py", "def total(items, tax_rate=0.0):\n    return 0\n")
+b = json.load(open(A / ".noether/baseline.json")); b["q"]["tests"] = []; Path(A, ".noether/baseline.json").write_text(json.dumps(b)); Path(A, ".noether/run/stage.json").write_text(json.dumps({**json.load(open(A / ".noether/run/stage.json")), "writes": ["lib/*"]}))
+r = sh(f"{N} commit -m bad", A)
+sh(f"{N} judge --unit a --by e --scores acceptance=.9,maintainable=.9,test_honesty=.9", A); sh(f"{N} done", A)
+ch["stages"]["a"]["writes"] = ["lib/*"]; Path(d, "c.json").write_text(json.dumps(ch))
+r = sh(f"{N} chain integrate c.json", d); ck("a stage cannot lower the integration baseline", r.returncode == 1 and "SEMANTIC" in r.stdout, r.stdout + r.stderr)
+d = init(repo()); ch = {"name": "c8", "flow": "a", "stages": {"a": {"goal": "g", "proof": "true", "writes": ["lib/a.py"]}}}
+Path(d, "c.json").write_text(json.dumps(ch)); sh(f"{N} commit -m c", d); sh(f"{N} chain start c.json a", d); A = Path(d, ".noether/run/wt/c8/a"); W(A, "lib/a.py", 'P = "AKIAABCDEFGHIJKLMNOP"\n'); sh(f"{N} gate", A); os.remove(A / "lib/a.py")
+ck("halted while the file exists", sh(f"{N} chain next c.json", d).returncode == 2)
+ck("resume clears a halt", sh(f"{N} chain resume c.json", d).returncode == 0 and sh(f"{N} chain next c.json", d).returncode == 0)
+W(A, "lib/a.py", "A = 1\n"); ck("stage proceeds after resume", sh(f"{N} gate --fresh", A).returncode == 0)
+print(f"\n{'ALL PASS' if not fails else 'FAILED: ' + str(fails)}")
+sys.exit(1 if fails else 0)

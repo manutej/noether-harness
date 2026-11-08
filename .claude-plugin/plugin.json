@@ -1,0 +1,8 @@
+{
+  "name": "noether-harness",
+  "version": "3.0.0",
+  "description": "Conservation gate for long-horizon coding agents, with chainable harnesses.",
+  "author": {
+    "name": "manutej"
+  }
+}
