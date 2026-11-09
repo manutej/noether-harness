@@ -7,6 +7,41 @@
  "judge_fails": 0,
  "max_attempts": 12,
  "proof": "grep -q 'exclude).noether' scripts/noether.py && grep -q 'Fix these before asking' scripts/noether.py && grep -q 'optional' SKILL.md",
+ "receipt": {
+  "attempts": 1,
+  "base": "2eaf82abebdbfa0514e0f3c1e8b27664a292b867",
+  "claims": [
+   "e2e",
+   "lint",
+   "public_api",
+   "secrets",
+   "tests",
+   "tests_not_weakened",
+   "proof"
+  ],
+  "decision": "PASSED",
+  "evidence": [],
+  "grants": [],
+  "harness_sha": "9e33133f610bb839",
+  "judges": {
+   "by": [
+    "fable-evaluator-2"
+   ],
+   "means": {
+    "acceptance": 0.75,
+    "maintainable": 0.8,
+    "test_honesty": 0.75
+   }
+  },
+  "touched": [
+   "SKILL.md",
+   "docs/DECISIONS.md",
+   "scripts/noether.py",
+   "tests/e2e.py"
+  ],
+  "tree": "390d35e07f21d189b936d8ebce29b10b83846dab",
+  "unit": "ceremony"
+ },
  "scope": [
   "scripts/*",
   "tests/*",
@@ -17,5 +52,5 @@
  ],
  "seq": 1,
  "start": "2eaf82abebdbfa0514e0f3c1e8b27664a292b867",
- "status": "open"
+ "status": "passed"
 }

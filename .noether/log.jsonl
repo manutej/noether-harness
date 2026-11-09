@@ -8,3 +8,4 @@
 {"by": "fable-evaluator-2", "e": "judge", "passed": true, "scores": {"acceptance": 0.75, "maintainable": 0.8, "test_honesty": 0.75}, "tree": "390d35e07f21d189b936d8ebce29b10b83846dab", "unit": "ceremony"}
 {"by": "fable-evaluator-2", "e": "judge", "passed": true, "scores": {"acceptance": 0.7, "maintainable": 0.75, "test_honesty": 0.7}, "tree": "390d35e07f21d189b936d8ebce29b10b83846dab", "unit": "records"}
 {"e": "unit_done", "grants": 0, "unit": "records"}
+{"e": "unit_done", "grants": 0, "unit": "ceremony"}
