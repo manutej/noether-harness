@@ -1,0 +1,22 @@
+{
+ "attempts": 2,
+ "failed_tree": "f30059c4660e3c493ab3ff632c7889d40a6a5a49",
+ "goal": "Close the evaluators' and round-one panel's defects: exact secret grants, optional gate and commit in docs, visible quarantine, per-test tracking for Node Go and Rust, required proofs, grants that must match, safe reopen and land, build caches excluded, and honest docs.",
+ "grants": [],
+ "id": "polish",
+ "judge_fails": 3,
+ "max_attempts": 12,
+ "proof": "grep -q 'hexdigest()\\[:8\\]' scripts/noether.py && ! grep -q 'gate.*commit.*brief.*judge.*done' references/chains.md",
+ "scope": [
+  "scripts/*",
+  "tests/*",
+  "SKILL.md",
+  "references/*",
+  "README.md",
+  "docs/*",
+  "dist/*"
+ ],
+ "seq": 3,
+ "start": "2e292466eee1d12d1822efb4d7a43f53ac993569",
+ "status": "halted"
+}

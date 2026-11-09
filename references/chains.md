@@ -12,7 +12,7 @@ A **stage** binds an Agent, a Harness, a Loop and a footprint. A chain composes 
   "rates": {"agent": "coder", "goal": "...", "proof": "pytest tests/test_rates.py -q",
             "writes": ["lib/money.py", "tests/test_money.py"], "provides": ["taxed"],
             "grants": [{"check": "public_api", "allow": ["lib.money.total*"], "reason": "Requested in issue 12"}]},
-  "invoice": {"agent": "coder", "goal": "...", "proof": "...", "writes": ["lib/bill.py"], "reads": ["lib/money.py"]},
+  "invoice": {"agent": "coder", "goal": "...", "proof": "...", "writes": ["lib/bill.py"], "reads": ["lib/money.py"], "attempts": 12},
   "review": {"goal": "...", "proof": "...", "writes": ["NOTES.md"], "needs": ["taxed"],
              "harness": {"add_checks": [{"id": "notes", "class": "pass", "cmd": "test -s NOTES.md"}]}}
  }
@@ -31,7 +31,7 @@ n chain integrate chain.json    # verifies receipts, merges, re-verifies; atomic
 n chain land chain.json         # fast-forwards your branch once every stage is integrated
 ```
 
-Commit `.noether/` and the chain file first, and don't commit on your branch until the chain has landed. Each stage runs the ordinary loop (`gate`, `commit`, `brief`, `judge`, `done`) inside its worktree. Spawn one subagent per started stage with the brief `start` prints, using any bound model or skills. Use the worktree `start` creates rather than native worktree isolation, because stages must branch from the integration line.
+Each stage gets 12 attempts unless it sets `attempts`. Commit `.noether/` and the chain file first, and don't commit on your branch until the chain has landed. Chain state is in `.git/noether/`; it is local to this clone. A stage's proof lives in the chain file, so change it there. Each stage runs the ordinary loop inside its worktree: `brief`, `judge`, `done`, with `gate` and `commit` as optional checkpoints. Spawn one subagent per started stage with the brief `start` prints. A bound model or skill means defining a subagent in `.claude/agents/` with those fields; the receipt records the binding. Use the worktree `start` creates rather than native worktree isolation, because stages must branch from the integration line.
 
 ## What holds, and why
 
@@ -48,17 +48,17 @@ Commit `.noether/` and the chain file first, and don't commit on your branch unt
 
 ## When things fail
 
-- **SEMANTIC conflict at integration.** Nothing merged. Integrate the sound subset with `--only`, then `chain start --reopen` the other stage, which merges the integration line in, and repair it. Or sequence the stages.
-- **A stage saturates.** It halts; downstream stages wait; siblings continue and keep their work.
+- **SEMANTIC conflict at integration.** Nothing merged. If the repair edits an assertion the stage already committed, grant it. Integrate the sound subset with `--only`, then `chain start --reopen` the other stage, which merges the integration line in, and repair it. Or sequence the stages.
+- **A stage saturates.** It halts; downstream stages wait; siblings continue and keep their work. A person decides whether it continues, with a bare `unit reopen ID` in its worktree.
 - **A hard stop (a secret).** Sibling gates exit 2, and `chain next` tells you to start nothing and tell a person. Once it is dealt with, a person runs `chain resume`.
-- **`land` says the branch moved.** It prints the command that gates the combined tree instead.
+- **`land` says the branch moved.** Run `chain land FILE --merge`, which gates the combined tree with the stages' grants, then lands it.
 - **Crash or reset.** Everything is on disk. `chain next` picks up from receipts, and re-running `start` on an existing stage is safe.
 
 ## Native features to use, not rebuild
 
 | Need | Use |
 |---|---|
-| Fan-out and independent context | Subagents, up to 3 nesting levels |
+| Fan-out and independent context | Subagents |
 | Keep going until done | `/goal` (see `n goal`), or a Stop hook |
 | Spend and turn caps | `maxTurns`, `maxBudgetUsd` |
 | Compaction and resume | Native; `status` re-injects state |

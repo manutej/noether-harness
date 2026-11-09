@@ -15,15 +15,15 @@ Each rule changes a decision the runtime makes.
 | Rule | Runtime consequence |
 |---|---|
 | **Product order.** State ≥ baseline, pointwise over checks (`keep` is ⊇, `max` is ≤) | The commit decision. Needs no threshold or average |
-| **Approximation is bounded by a pin.** Each `eps` is measured from a high-water mark that only improves | Without a grant or re-init, total drift ≤ ε over any number of commits. Tolerating ε per commit instead allows Nε. A biased walk over 200 commits stayed within 0.5 at ε = 0.5 |
+| **Approximation is bounded by a pin.** Each `eps` is measured from a high-water mark that only improves | Without a grant or re-init, total drift ≤ ε over any number of commits. Tolerating ε per commit instead allows Nε |
 | **Soft axes are conjoined, not averaged.** | With one axis truly at 0.45 and two at 0.90, a mean against 0.6 accepts 99.5% of the time; per-axis thresholds, 7% |
 | **Retries are multiple testing.** Every evaluator must pass; the number required rises 1, 2, 3 across failures, capped at 3 attempts | For a flawed change at 0.45 and judge noise 0.10, false accepts fall from 19% (re-judge three times, keep the best) to 7%; at 0.55, from 67% to 39%. Thresholds should sit clear of what you would reject |
 | **Termination.** Attempts per unit and units per task are finite; chain budgets sum | Every loop is bounded by a stated counter |
 | **Sequencing is typed.** `needs` ⊆ what came before | A chain that cannot be satisfied never starts |
-| **Parallel needs Bernstein's condition.** Writes disjoint; no read of another's write | Otherwise scheduling changes results (found by property test) |
-| **Receipts do not compose by union.** The guarantee of `a;b` holds only if `a`'s checks are re-verified after `b` | Integration re-runs the harness checks, every stage's added checks and proofs. Property tests found concrete counterexamples to naive concatenation and to gluing parallel branches across a check that spans both |
+| **Parallel needs Bernstein's condition.** Writes disjoint; no read of another's write | Otherwise scheduling changes results |
+| **Receipts do not compose by union.** The guarantee of `a;b` holds only if `a`'s checks are re-verified after `b` | Integration re-runs the harness checks, every stage's added checks and proofs. A later step can break an earlier check, and a check spanning two branches can pass on each and fail on the merge |
 | **Composites are atomic.** | Otherwise `(a;b);c` and `a;(b;c)` can commit different states. Bracketing must not be a transaction boundary |
-| **Learning needs evidence, and retirement needs a person.** Promote at Wilson lower bound ≥ 0.5 (4 of 4 is enough) | A rule of "retire after 20 quiet tasks" retires a lens with a 5% fire rate within 100 tasks 98% of the time, and cannot see deterrence |
+| **Learning needs evidence, and retirement needs a person.** Promote at Wilson lower bound ≥ 0.5 on distinct fires (4 of 4 is enough) | A rule of "retire after 20 quiet tasks" retires a lens with a 5% fire rate within 100 tasks 98% of the time, and cannot see deterrence |
 
 The figures assume Gaussian judge noise of standard deviation 0.10. They show the direction of each effect; the exact values do not transfer.
 
@@ -40,7 +40,7 @@ The earlier version named a monoidal lens category, an internal hom, retracts, a
 | Free ⊣ Forgetful | Grow and prune with evidence | `learn` |
 | 2-cell log | An append-only change log | `log.jsonl` |
 
-The composition that matters is of harnesses: a stage has a precondition (`needs`), a guarantee (its checks and proof) and a footprint. Sequencing is associative, and parallel with disjoint footprints commutes; three bracketings of a real chain landed the identical tree. Interchange `(a;b)|(c;d) = (a|c);(b|d)` holds for the landed tree, not the schedule, and only if no branch reads what another writes, which is exactly why footprints are declared. Footprints are declarations: writes are verified at integration, reads are trusted. A category-theoretic reading is available and nothing is built on it. The mathematics earns its place by telling you which composition is legal.
+The composition that matters is of harnesses: a stage has a precondition (`needs`), a guarantee (its checks and proof) and a footprint. Sequencing is associative, and parallel with disjoint footprints commutes, because composites are atomic and a stage's order comes only from the flow. Interchange `(a;b)|(c;d) = (a|c);(b|d)` holds for the landed tree, not the schedule, and only if no branch reads what another writes, which is exactly why footprints are declared. Footprints are declarations: writes are verified at integration, reads are trusted. A category-theoretic reading is available and nothing is built on it. The mathematics earns its place by telling you which composition is legal.
 
 ## What this is not
 

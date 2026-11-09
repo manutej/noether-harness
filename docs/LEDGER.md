@@ -9,15 +9,15 @@ Six independent reviewers roasted the previous skill, on separate lanes: frontie
 | Measure | Previous skill | Rebuilt |
 |---|---|---|
 | Long-horizon feasibility | 3/10 | Not re-scored |
-| Out-of-the-box usability | 3/10 (dry run) | 6/10 (blind user, before the fixes below) |
-| Must read before acting | about 18k tokens | about 1.7k tokens |
+| Out-of-the-box usability | 3/10 (dry run) | 8.6/10 (five-round blind panel; see DECISIONS.md) |
+| Must read before acting | about 18k tokens | about 2.3k tokens |
 | Files hand-written before the first gate | 18 | 0 |
 | Time to first gate | 177 s, after building the machinery | about 140 s, including recovering from two bugs since fixed |
 | Harness versus work tokens per commit | 30:1 (soft judges every repair step) | Judged once per unit |
 | Could resume after a context reset | No | Yes, from `status` |
 | Chaining | Absent | Sequence, parallel, nesting |
 
-The rebuilt score was not re-measured after the final fixes.
+Later rounds are recorded in `docs/DECISIONS.md` and `docs/CHANGELOG.md`.
 
 ## What the frontier review changed
 
