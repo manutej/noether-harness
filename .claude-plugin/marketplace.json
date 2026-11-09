@@ -9,5 +9,6 @@
       "source": ".",
       "description": "Conservation gate for long-horizon coding agents, with chainable harnesses."
     }
-  ]
+  ],
+  "description": "The noether-harness skill: a conservation gate for long-horizon coding agents."
 }

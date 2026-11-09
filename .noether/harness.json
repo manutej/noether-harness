@@ -1,0 +1,76 @@
+{
+ "axes": [
+  {
+   "id": "acceptance",
+   "rubric": "The change fully meets the unit's goal, including edge cases the goal implies.",
+   "threshold": 0.6
+  },
+  {
+   "id": "maintainable",
+   "rubric": "A maintainer can follow it; it fits the existing structure; no needless churn.",
+   "threshold": 0.6
+  },
+  {
+   "id": "test_honesty",
+   "rubric": "Tests assert behaviour and would fail if the feature broke.",
+   "threshold": 0.6
+  }
+ ],
+ "checks": [
+  {
+   "class": "pass",
+   "cmd": "python3 -I tests/e2e.py",
+   "id": "e2e",
+   "mode": "veto",
+   "protected": true,
+   "timeout": 1500
+  },
+  {
+   "authorizable": true,
+   "class": "keep",
+   "cmd": "python3 .noether/noether.py probe pytest",
+   "flaky": true,
+   "id": "tests",
+   "mode": "veto",
+   "protected": true
+  },
+  {
+   "authorizable": true,
+   "class": "keep",
+   "cmd": "python3 .noether/noether.py probe pyapi",
+   "id": "public_api",
+   "mode": "veto",
+   "protected": true
+  },
+  {
+   "class": "max",
+   "cmd": "python3 .noether/noether.py probe count '^[^ ].*:[0-9]+:[0-9]+:' -- ruff check --extend-exclude .noether --output-format=concise .",
+   "id": "lint",
+   "mode": "veto"
+  },
+  {
+   "class": "none",
+   "cmd": "python3 .noether/noether.py probe secrets",
+   "id": "secrets",
+   "mode": "veto",
+   "on_fail": "halt",
+   "protected": true
+  },
+  {
+   "authorizable": true,
+   "class": "none",
+   "cmd": "python3 .noether/noether.py probe weaken",
+   "id": "tests_not_weakened",
+   "mode": "veto",
+   "protected": true
+  }
+ ],
+ "loop": {
+  "attempts": 12,
+  "judge_attempts": 3
+ },
+ "scope": [
+  "**"
+ ],
+ "version": 1
+}
