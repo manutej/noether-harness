@@ -381,7 +381,9 @@ def cmd_unit(a):
 def cmd_brief(a):
     locate(); ready(); u = get_unit(a.unit); h = harness()
     if not u: die("no open unit")
-    print(f"You are a fresh evaluator. Assume the work is flawed until shown otherwise. Do not edit anything.\n\nGOAL: {u['goal']}\nPROOF COMMAND: {u['proof']}\n\nInspect the change with: git diff {u['start']} (plus untracked files via git status).\n\nScore each axis 0 to 1 on its own:")
+    res = evaluate(u)
+    if not res["ok"]: show(res, u); print("Fix these before asking for an evaluation.", file=sys.stderr); return rc(res, u) or 1
+    print(f"You are a fresh evaluator. Assume the work is flawed until shown otherwise. Do not edit anything.\n\nGOAL: {u['goal']}\nPROOF COMMAND: {u['proof']}\n\nInspect the change with: git diff {u['start']} -- . ':(exclude).noether' (plus untracked files via git status).\n\nScore each axis 0 to 1 on its own:")
     for x in h["axes"]: print(f"- {x['id']} (must reach {x['threshold']}): {x['rubric']}")
     print(f"\nFinish by running from {ROOT}:\n  python3 .noether/noether.py judge --unit {u['id']} --by <your-agent-id> --scores id=score,id=score --note '<one line on the weakest axis>'")
     return 0

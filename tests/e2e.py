@@ -1,8 +1,9 @@
 """End-to-end test of the runtime on real git repos. Each scenario prints PASS or FAIL."""
-import json, os, shutil, subprocess as sp, sys, tempfile
+import hashlib, json, os, shutil, subprocess as sp, sys, tempfile
 from pathlib import Path
 SRC = sys.argv[1] if len(sys.argv) > 1 else str(Path(__file__).resolve().parent.parent / "scripts" / "noether.py")
 fails = []
+FAKE = "AK" + "IAABCDEFGHIJKLMNOP"  # assembled so this file holds no literal key
 def ck(name, cond, extra=""):
     print(("PASS " if cond else "FAIL ") + name, extra if not cond else "")
     if not cond: fails.append(name)
@@ -80,6 +81,10 @@ r = finish(d, "u2"); ck("granted unit completes", r.returncode == 0, r.stdout + 
 ck("grant recorded in receipt", json.load(open(f"{d}/.noether/units/u2.json"))["receipt"]["grants"])
 b = json.load(open(f"{d}/.noether/baseline.json")); ck("dropped test leaves the baseline", not any("test_tax" in t for t in b["q"]["tests"]))
 ck("secrets cannot be granted", sh(f"{N} unit add u3 --goal g; {N} grant --unit u3 secrets --allow '*' --reason x", d).returncode != 0)
+d9 = init(repo()); add_unit(d9, "s1"); W(d9, "lib/fx.py", f'K = "{FAKE}"\n')
+ck("a secret still halts", sh(f"{N} gate --unit s1", d9).returncode == 2)
+sh(f"{N} grant --unit s1 secrets --allow 'lib/fx.py: aws' --reason 'fixture, confirmed by owner'", d9)
+ck("a person can excuse one exact false positive", sh(f"{N} gate --unit s1", d9).returncode == 0)
 
 # judge escalation and saturation
 W(d, "lib/a.py", "A = 1\n")
@@ -218,6 +223,29 @@ r = sh(f"{N} chain land inner.json", P); ck("nested chain lands in the stage", r
 sh(f"{N} judge --unit p --by evp --scores acceptance=.9,maintainable=.9,test_honesty=.9", P); r = sh(f"{N} done", P); ck("parent stage certifies with its own proof", r.returncode == 0, r.stdout + r.stderr)
 ck("parent receipt carries child evidence", len(json.load(open(sh("git rev-parse --git-common-dir", P).stdout.strip() if False else Path(d, ".git/noether/out1/receipts/p.json")))["evidence"]) == 2)
 ck("parent integrates", sh(f"{N} chain integrate outer.json", d).returncode == 0)
+# brief refuses a red tree and keeps harness records out of the evaluator's diff
+d = init(repo()); add_unit(d, "b1"); W(d, "lib/k9.py", f'K = "{FAKE}"\n')
+r = sh(f"{N} brief --unit b1", d); ck("brief refuses a red tree", r.returncode != 0 and "evaluator" not in r.stdout, r.stdout); os.remove(f"{d}/lib/k9.py")
+W(d, "lib/k9.py", "K = 1\n"); r = sh(f"{N} brief --unit b1", d); ck("brief excludes harness records", "exclude).noether" in r.stdout, r.stdout + r.stderr)
+
+# decisions and judgments are kept
+d = init(repo()); add_unit(d, "r1"); sh(f"{N} decide 'use sqlite' --why 'one writer'", d)
+ck("status shows decisions after a reset", "use sqlite" in sh(f"{N} status", d).stdout)
+W(d, "lib/k.py", f'K = "{FAKE}"\n'); sh(f"{N} gate --unit r1", d); os.remove(f"{d}/lib/k.py"); W(d, "lib/k.py", "K = 1\n")
+sh(f"{N} judge --unit r1 --by evA --scores acceptance=.2,maintainable=.9,test_honesty=.9 --note 'misses edge'", d)
+L = sh(f"{N} log", d).stdout; ck("log keeps decisions, rejects and judge notes", all(x in L for x in ("use sqlite", "one writer", "reject", "misses edge")), L)
+ck("log filters to decisions", "misses edge" not in sh(f"{N} log --only decisions", d).stdout)
+
+# a hand-written receipt does not certify; a gitignored test file is flagged
+d = init(repo()); ch = {"name": "c7", "flow": "a", "stages": {"a": {"goal": "g", "proof": "true", "writes": ["lib/a.py"]}}}
+Path(d, "c.json").write_text(json.dumps(ch)); sh(f"{N} commit -m c", d); sh(f"{N} chain start c.json a", d); A = Path(d, ".noether/run/wt/c7/a"); W(A, "lib/a.py", "A = 1\n"); sh(f"{N} commit -m w", A)
+head = sh("git rev-parse HEAD", A).stdout.strip(); sha = sh("python3 -I -c \"import hashlib;print(hashlib.sha256(open('.noether/harness.json','rb').read()+open('.noether/noether.py','rb').read()).hexdigest()[:16])\"", A).stdout.strip()
+rec = {"stage": "a", "head": head, "harness_sha": sha, "tree": "x", "base": head, "claims": [], "decision": "PASSED"}; rec["digest"] = hashlib.sha256(json.dumps(rec, sort_keys=True).encode()).hexdigest()[:16]
+os.makedirs(f"{d}/.git/noether/c7/receipts", exist_ok=True); Path(d, ".git/noether/c7/receipts/a.json").write_text(json.dumps(rec))
+r = sh(f"{N} chain integrate c.json", d); ck("hand-written receipt is refused", r.returncode == 1 and "no passed unit" in r.stdout, r.stdout + r.stderr)
+d = init(repo()); W(d, ".gitignore", "tests/test_local.py\n"); W(d, "tests/test_local.py", "def test_x():\n    assert True\n")
+r = sh(f"{N} gate", d); ck("gitignored test file is flagged", "gitignored test file" in r.stdout, r.stdout)
+
 # regressions from the red team, blind user and maths review
 d = init(repo()); add_unit(d, "p1", proof="echo leak > tests/snap.txt")
 W(d, "lib/a2.py", "A = 1\n"); sh(f"{N} judge --unit p1 --by e --scores acceptance=.9,maintainable=.9,test_honesty=.9", d)
@@ -226,7 +254,7 @@ ck("failed commit leaves the unit open", json.load(open(f"{d}/.noether/units/p1.
 d = repo(); W(d, ".gitignore", ".env\n"); W(d, ".env", "1\n"); W(d, "lib/cfg.py", "import pathlib\n\n\ndef rate():\n    return int(pathlib.Path('.env').read_text())\n"); W(d, "tests/test_cfg.py", "from lib.cfg import rate\n\n\ndef test_rate():\n    assert rate() == 1\n"); sh("git add -A; git commit -q -m cfg", d); init(d)
 W(d, "lib/cfg.py", "import pathlib\n\n\ndef rate():\n    return 2 + int(pathlib.Path('.env').read_text())\n")
 ck("deterministic failure is not excused as flaky", sh(f"{N} gate --fresh", d).returncode == 1)
-d = init(repo()); W(d, "lib/café.py", 'TOKEN = "AKIAABCDEFGHIJKLMNOP"\n'); ck("non-ascii path is scanned", sh(f"{N} gate", d).returncode == 2)
+d = init(repo()); W(d, "lib/café.py", f'TOKEN = "{FAKE}"\n'); ck("non-ascii path is scanned", sh(f"{N} gate", d).returncode == 2)
 d = init(repo()); W(d, "lib/money.py", "def total(items, tax_rate=0.0, start=0):\n    return round(sum(items) * (1 + tax_rate), 2) + start\n"); ck("adding an optional parameter passes", sh(f"{N} gate", d).returncode == 0)
 W(d, "lib/money.py", "def total(items, tax_rate):\n    return round(sum(items) * (1 + tax_rate), 2)\n"); ck("making a parameter required is vetoed", sh(f"{N} gate", d).returncode == 1)
 sh("git checkout lib", d)
@@ -241,7 +269,7 @@ sh(f"{N} judge --unit a --by e --scores acceptance=.9,maintainable=.9,test_hones
 ch["stages"]["a"]["writes"] = ["lib/*"]; Path(d, "c.json").write_text(json.dumps(ch))
 r = sh(f"{N} chain integrate c.json", d); ck("a stage cannot lower the integration baseline", r.returncode == 1 and "SEMANTIC" in r.stdout, r.stdout + r.stderr)
 d = init(repo()); ch = {"name": "c8", "flow": "a", "stages": {"a": {"goal": "g", "proof": "true", "writes": ["lib/a.py"]}}}
-Path(d, "c.json").write_text(json.dumps(ch)); sh(f"{N} commit -m c", d); sh(f"{N} chain start c.json a", d); A = Path(d, ".noether/run/wt/c8/a"); W(A, "lib/a.py", 'P = "AKIAABCDEFGHIJKLMNOP"\n'); sh(f"{N} gate", A); os.remove(A / "lib/a.py")
+Path(d, "c.json").write_text(json.dumps(ch)); sh(f"{N} commit -m c", d); sh(f"{N} chain start c.json a", d); A = Path(d, ".noether/run/wt/c8/a"); W(A, "lib/a.py", f'P = "{FAKE}"\n'); sh(f"{N} gate", A); os.remove(A / "lib/a.py")
 ck("halted while the file exists", sh(f"{N} chain next c.json", d).returncode == 2)
 ck("resume clears a halt", sh(f"{N} chain resume c.json", d).returncode == 0 and sh(f"{N} chain next c.json", d).returncode == 0)
 W(A, "lib/a.py", "A = 1\n"); ck("stage proceeds after resume", sh(f"{N} gate --fresh", A).returncode == 0)

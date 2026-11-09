@@ -11,7 +11,7 @@ Order (commit iff state >= baseline, pointwise):
   pass: exit 0 | keep: baseline lines subset of current | none: no lines | max: <= base+eps | min: >= base-eps
 Baselines are high-water marks, so eps bounds total drift. Soft axes never average: each must clear its threshold.
 """
-import argparse, ast, fnmatch, hashlib, json, math, os, re, shutil, subprocess as sp, sys, tempfile
+import argparse, ast, fnmatch, hashlib, json, math, os, re, shutil, subprocess as sp, sys, tempfile, time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -41,7 +41,7 @@ def wr(p, obj):
 def digest(o):
     return hashlib.sha256(json.dumps(o, sort_keys=True).encode()).hexdigest()[:16]
 def log(event, **kw):
-    with open(N / "log.jsonl", "a") as f: f.write(json.dumps({"e": event, **kw}, sort_keys=True) + "\n")
+    with open(N / "log.jsonl", "a") as f: f.write(json.dumps({"e": event, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **kw}, sort_keys=True) + "\n")
 def events():
     try: return [json.loads(l) for l in open(N / "log.jsonl") if l.strip()]
     except OSError: return []
@@ -249,17 +249,18 @@ def evaluate(u=None, grants=None, use_cache=True, base_scope=True):
     if base_scope:
         out = [p for p in touched(base_rev(), tree) if not match(p, scope_for(u))]
         if out: fails.append({"id": "scope", "why": out[:15], "count": len(out)})
-    res = {"ok": not fails, "halt": halt, "tree": tree, "unit": uid, "sha": sha, "gk": gk, "failures": fails, "q": q}
+    hidden = [f for f in G("ls-files", "-oi", "--exclude-standard").splitlines() if (TEST_PATH.search(f) or f.endswith("conftest.py")) and not re.search(r"(^|/)(\.noether|\.venv|venv|node_modules|site-packages|__pycache__)/|\.pyc$", f)]
+    res = {"ok": not fails, "halt": halt, "tree": tree, "unit": uid, "sha": sha, "gk": gk, "failures": fails, "q": q, "warnings": [f"gitignored test file can affect this gate but is not committed: {f}" for f in hidden[:10]]}
     wr(RUN / "gate.json", res)
     if halt and hf: hf.parent.mkdir(parents=True, exist_ok=True); hf.write_text(tree)
     if u and fails and u.get("failed_tree") != tree:
-        u["attempts"] += 1; u["failed_tree"] = tree
+        u["attempts"] += 1; u["failed_tree"] = tree; log("reject", unit=uid, tree=tree, failures=[x["id"] for x in fails])
         if u["attempts"] >= u["max_attempts"]: u["status"] = "halted"; log("saturated", unit=uid)
         wr(unit_path(uid), u)
     with open(RUN / "gates.jsonl", "a") as f: f.write(json.dumps({"ok": res["ok"], "unit": uid}) + "\n")
     return res
 def show(res, u=None):
-    out = {k: res[k] for k in ("ok", "halt", "failures") if k in res}
+    out = {k: res[k] for k in ("ok", "halt", "failures", "warnings") if res.get(k) is not None and res.get(k) != []}; out["ok"] = res["ok"]
     if u: out["unit"] = u["id"]; out["attempts"] = f"{u['attempts']}/{u['max_attempts']}"; out["status"] = u["status"]
     print(json.dumps(out, indent=1))
 def rc(res, u=None):
@@ -289,7 +290,7 @@ def detect():
     if (ROOT / "tsconfig.json").exists() and shutil.which("tsc"): add("type_errors", "max", f"{me} count 'error TS' -- tsc --noEmit")
     if (ROOT / "go.mod").exists(): add("tests", "pass", "go test ./...", protected=True, authorizable=True); add("vet", "pass", "go vet ./...")
     if (ROOT / "Cargo.toml").exists(): add("tests", "pass", "cargo test -q", protected=True, authorizable=True)
-    add("secrets", "none", f"{me} secrets", protected=True, on_fail="halt")
+    add("secrets", "none", f"{me} secrets", protected=True, on_fail="halt", authorizable=True)
     add("tests_not_weakened", "none", f"{me} weaken", protected=True, authorizable=True)
     if not any(c["id"] == "tests" for c in checks): warn.append("no test runner detected: nothing conserves behaviour; add one with `learn add`")
     if not shutil.which("gitleaks"): warn.append("gitleaks not installed: secrets uses the built-in pattern scan, which is weaker")
@@ -348,7 +349,7 @@ def cmd_hook(_):
     def say(d, why): print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": d, "permissionDecisionReason": why}}))
     if t == "Bash":
         c = ti.get("command", "")
-        if re.search(r"git\b.*\bcommit\b.*(--no-verify|\s-[a-zA-Z]*n\b)", c) or "core.hooksPath" in c: say("deny", "Bypassing the conservation gate is not allowed. Use noether.py commit.")
+        if re.search(r"git\b.*\bcommit\b.*(--no-v\w*|\s-[a-zA-Z]*n\b)", c) or "core.hooksPath" in c: say("deny", "Bypassing the conservation gate is not allowed. Use noether.py commit.")
         elif re.search(r"noether\.py\s+(grant|rehash|learn\s+(promote|retire)|unit\s+reopen|chain\s+resume|init\s.*--force)", c): say("ask", "This changes what the harness conserves. A person should approve it.")
     elif t in ("Edit", "Write") and re.search(r"[/\\]\.noether[/\\](harness\.json|baseline\.json|noether\.py|log\.jsonl|units[/\\])", ti.get("file_path", "")):
         say("deny", "The harness records are written only by noether.py.")
@@ -381,7 +382,9 @@ def cmd_unit(a):
 def cmd_brief(a):
     locate(); ready(); u = get_unit(a.unit); h = harness()
     if not u: die("no open unit")
-    print(f"You are a fresh evaluator. Assume the work is flawed until shown otherwise. Do not edit anything.\n\nGOAL: {u['goal']}\nPROOF COMMAND: {u['proof']}\n\nInspect the change with: git diff {u['start']} (plus untracked files via git status).\n\nScore each axis 0 to 1 on its own:")
+    res = evaluate(u)
+    if not res["ok"]: show(res, u); print("Fix these before asking for an evaluation.", file=sys.stderr); return rc(res, u) or 1
+    print(f"You are a fresh evaluator. Assume the work is flawed until shown otherwise. Do not edit anything.\n\nGOAL: {u['goal']}\nPROOF COMMAND: {u['proof']}\n\nInspect the change with: git diff {u['start']} -- . ':(exclude).noether' (plus untracked files via git status -- . ':(exclude).noether').\n\nScore each axis 0 to 1 on its own:")
     for x in h["axes"]: print(f"- {x['id']} (must reach {x['threshold']}): {x['rubric']}")
     print(f"\nFinish by running from {ROOT}:\n  python3 .noether/noether.py judge --unit {u['id']} --by <your-agent-id> --scores id=score,id=score --note '<one line on the weakest axis>'")
     return 0
@@ -396,7 +399,7 @@ def cmd_judge(a):
     if d.get("tree") != tree: d = {"tree": tree, "samples": []}
     if any(s["by"] == a.by for s in d["samples"]): die(f"evaluator {a.by} already judged this tree; use a fresh evaluator")
     bad = [f"{x['id']}={scores[x['id']]}" for x in h["axes"] if scores[x["id"]] < x["threshold"] and x["id"] not in waived(u)]
-    log("judge", unit=a.unit, tree=tree, by=a.by, scores=scores, passed=not bad)
+    log("judge", unit=a.unit, tree=tree, by=a.by, scores=scores, passed=not bad, note=a.note or "")
     if bad:
         u["judge_fails"] += 1; p.unlink(missing_ok=True)
         if u["judge_fails"] >= h["loop"]["judge_attempts"]: u["status"] = "halted"; log("saturated", unit=a.unit, why="judges")
@@ -429,7 +432,7 @@ def cmd_done(a):
     if st.get("nested"): st["evidence"] = [r.get("digest") for r in map(rd, sorted((common() / st["nested"] / "receipts").glob("*.json")))]
     excused = {g["check"] for g in u["grants"] if not g.get("axis")}
     rec = {"unit": u["id"], "base": u["start"], "tree": tree, "harness_sha": res["sha"], "claims": sorted(set(res["q"]) - excused) + ["proof"], "touched": touched(u["start"], tree),
-           "grants": u["grants"], "judges": {"means": means, "by": [o["by"] for o in samples]}, "attempts": u["attempts"], "evidence": st.get("evidence", []), "decision": "PASSED"}
+           "grants": u["grants"], "judges": {"means": means, "by": [o["by"] for o in samples]}, "attempts": u["attempts"], "evidence": st.get("evidence", []), "warnings": res.get("warnings", []), "decision": "PASSED"}
     if all(o["by"] == "self" for o in samples): rec["self_judged"] = True
     before_u, before_b = _read(unit_path(u["id"])), _read(N / "baseline.json")
     u.update(status="passed", receipt=rec); wr(unit_path(u["id"]), u); log("unit_done", unit=u["id"], grants=len(u["grants"]))
@@ -447,6 +450,7 @@ def cmd_grant(a):
         if any(g.get("axis") for g in u["grants"]): die("one waived axis per unit; ask a person to reconsider the unit instead")
     elif not c or not c.get("authorizable"): die(f"{a.check} is not authorizable")
     if not a.allow and not a.axis: die("name exactly what is excused with --allow PATTERN")
+    if a.check == "secrets" and any(re.search(r"[*?\[]", p) for p in a.allow): die("secrets: name each false positive exactly, as 'file: rule'")
     u["grants"].append({"check": a.check, "allow": a.allow or [], "reason": a.reason, "axis": bool(a.axis)}); wr(unit_path(u["id"]), u)
     log("grant", unit=u["id"], check=a.check, allow=a.allow, reason=a.reason); print("granted, and recorded in the receipt"); return 0
 def cmd_rehash(_):
@@ -497,9 +501,23 @@ def cmd_status(a):
         r = 1 - sum(rate) / len(rate); print(f"REJECT RATE (last {len(rate)}): {r:.0%}" + ("  STRANGLING: stop and tell a person; never loosen a check to get through" if r > .85 and len(rate) >= 10 else ""))
     shadow = [c["id"] for c in h["checks"] if c.get("mode") == "shadow"]
     if shadow: print(f"SHADOW: {shadow}")
-    tail = [e for e in ev if e["e"] != "shadow_fire"][-5:]
+    for e in [e for e in ev if e["e"] == "decision"][-3:]: print("DECIDED: " + describe(e))
+    tail = [e for e in ev if e["e"] not in ("shadow_fire", "decision")][-5:]
     if tail: print("LOG: " + " | ".join(json.dumps(e)[:200] for e in tail))
-    print("NEXT: " + ("work the current unit, then gate, commit, brief, judge, done" if open_ else "all units resolved" if us else "unit add ..."))
+    print("NEXT: " + ("work the current unit, then brief, judge, done" if open_ else "all units resolved" if us else "unit add ..."))
+    return 0
+def cmd_decide(a):
+    locate(); ready(); u = get_unit(a.unit); log("decision", what=a.what, why=a.why, unit=(u or {}).get("id")); print("logged"); return 0
+def describe(e):
+    k = e["e"]; u = f"[{e['unit']}] " if e.get("unit") else ""
+    if k == "decision": return f"{u}{e['what']} (because {e['why']})"
+    if k == "judge": return f"{u}{e['by']} {'passed' if e['passed'] else 'FAILED'} {e['scores']}" + (f": {e['note']}" if e.get("note") else "")
+    return u + ", ".join(f"{x}={v}" for x, v in e.items() if x not in ("e", "ts", "unit", "tree"))
+def cmd_log(a):
+    locate(); ready()
+    kinds = {"decisions": {"decision"}, "judgments": {"judge", "reject", "grant", "unit_done", "saturated", "promote", "retire", "quarantine", "integrate"}}.get(a.only)
+    rows = sorted((e for e in events() if e["e"] != "shadow_fire" and (not kinds or e["e"] in kinds)), key=lambda e: e.get("ts", ""))
+    for e in rows[-a.n:]: print(f"{e.get('ts', '-'):<21}{e['e']:<11}{describe(e)}")
     return 0
 def cmd_goal(_):
     locate(); ready(); n = sum(u["status"] == "open" for u in units())
@@ -596,6 +614,8 @@ def verify_receipt(cfg, d, st, s):
     if not r: return None, "no receipt"
     body = {k: v for k, v in r.items() if k != "digest"}
     if digest(body) != r.get("digest"): return r, "digest mismatch"
+    at_head = json.loads(git("show", f"{r['head']}:.noether/units/{s}.json").stdout or "{}")
+    if at_head.get("status") != "passed" or (at_head.get("receipt") or {}).get("tree") != r["tree"]: return r, "no passed unit at this head"
     if git("rev-parse", "--verify", "-q", f"noether/{cfg['name']}/{s}").stdout.strip() != r["head"]: return r, "branch moved after the receipt"
     if r["harness_sha"] != _sha_at(st["int"]): return r, "stale: harness changed"
     out = [p for p in touched(G("merge-base", st["int"], r["head"]), r["head"]) if not match(p, cfg["stages"][s]["writes"])]
@@ -634,7 +654,7 @@ def cmd_chain(a):
             (d / "receipts" / f"{s}.json").unlink(missing_ok=True)
         ag = cfg.get("agents", {}).get(c.get("agent", ""), {})
         nest = f"\nYour worker is a nested chain: run it from your worktree with `chain next {c['chain']}`; land it, then prove and finish this stage." if c.get("chain") else ""
-        print(f"Spawn one agent{' with ' + json.dumps(ag) if ag else ''} and give it this brief:\n---\nWork only in {p}. You are stage '{s}' of chain '{cfg['name']}'.\nGOAL: {c.get('goal', '')}\nYOU MAY WRITE: {c['writes']}\nYOU RELY ON: {c.get('reads', [])}\nDONE MEANS: `{c.get('proof', '')}` exits 0.\nCertified by others: {c.get('needs', [])}.{nest}\nLoop: edit; `python3 .noether/noether.py gate`; `... commit -m`; have a fresh agent run `... brief` and judge; `... done`.\nReport only the final `done` output.\n---")
+        print(f"Spawn one agent{' with ' + json.dumps(ag) if ag else ''} and give it this brief:\n---\nWork only in {p}. You are stage '{s}' of chain '{cfg['name']}'.\nGOAL: {c.get('goal', '')}\nYOU MAY WRITE: {c['writes']}\nYOU RELY ON: {c.get('reads', [])}\nDONE MEANS: `{c.get('proof', '')}` exits 0.\nCertified by others: {c.get('needs', [])}.{nest}\nLoop: edit; `python3 .noether/noether.py brief`, then have a fresh agent judge from it; `... done`. `gate` and `commit -m` are optional checkpoints.\nReport only the final `done` output.\n---")
         return 0
     if a.op == "integrate":
         todo = [s for s in order if s not in st["integrated"] and deps[s] <= set(st["integrated"]) and (not a.only or s in a.only)]
@@ -688,7 +708,8 @@ def main():
         return q
     U = (["--unit"], {})
     sub("init", cmd_init, (["--force"], {"action": "store_true"}), (["--dirty"], {"action": "store_true"}), (["--claude"], {"action": "store_true"}))
-    sub("status", cmd_status, (["--done"], {"action": "store_true"})); sub("goal", cmd_goal); sub("hook", cmd_hook); sub("precommit", cmd_precommit); sub("rehash", cmd_rehash)
+    sub("status", cmd_status, (["--done"], {"action": "store_true"})); sub("goal", cmd_goal)
+    sub("decide", cmd_decide, (["what"], {}), (["--why"], {"required": True}), U); sub("log", cmd_log, (["--only"], {"choices": ["decisions", "judgments"]}), (["-n"], {"type": int, "default": 40})); sub("hook", cmd_hook); sub("precommit", cmd_precommit); sub("rehash", cmd_rehash)
     sub("gate", cmd_gate, U, (["--fresh"], {"action": "store_true"})); sub("commit", cmd_commit, U, (["-m", "--message"], {"required": True}))
     sub("unit", cmd_unit, (["op"], {"choices": ["add", "reopen"]}), (["id"], {}), (["--goal"], {}), (["--proof"], {"default": "true"}), (["--scope"], {"nargs": "+", "action": "extend"}), (["--attempts"], {"type": int}))
     sub("brief", cmd_brief, U); sub("judge", cmd_judge, (["--unit"], {"required": True}), (["--by"], {"required": True}), (["--scores"], {"required": True}), (["--note"], {})); sub("done", cmd_done, U)

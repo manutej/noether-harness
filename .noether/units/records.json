@@ -1,0 +1,56 @@
+{
+ "attempts": 1,
+ "failed_tree": "1c7b16cc5a1c98f859bb8cceaffdc57a9e921cf0",
+ "goal": "Keep why as well as what: decide and log commands, decisions shown by status, rejections and evaluator notes recorded, receipts checked against the unit at head, and a warning for gitignored test files that can affect a gate. Hints agree that gate and commit are optional.",
+ "grants": [],
+ "id": "records",
+ "judge_fails": 0,
+ "max_attempts": 12,
+ "proof": "python3 .noether/noether.py --help | grep -q . && grep -q 'def cmd_decide' scripts/noether.py && grep -q 'no passed unit at this head' scripts/noether.py && grep -q 'n decide' SKILL.md",
+ "receipt": {
+  "attempts": 1,
+  "base": "2eaf82abebdbfa0514e0f3c1e8b27664a292b867",
+  "claims": [
+   "e2e",
+   "lint",
+   "public_api",
+   "secrets",
+   "tests",
+   "tests_not_weakened",
+   "proof"
+  ],
+  "decision": "PASSED",
+  "evidence": [],
+  "grants": [],
+  "harness_sha": "9e33133f610bb839",
+  "judges": {
+   "by": [
+    "fable-evaluator-2"
+   ],
+   "means": {
+    "acceptance": 0.7,
+    "maintainable": 0.75,
+    "test_honesty": 0.7
+   }
+  },
+  "touched": [
+   "SKILL.md",
+   "docs/DECISIONS.md",
+   "scripts/noether.py",
+   "tests/e2e.py"
+  ],
+  "tree": "390d35e07f21d189b936d8ebce29b10b83846dab",
+  "unit": "records"
+ },
+ "scope": [
+  "scripts/*",
+  "tests/*",
+  "SKILL.md",
+  "references/*",
+  "README.md",
+  "docs/*"
+ ],
+ "seq": 2,
+ "start": "2eaf82abebdbfa0514e0f3c1e8b27664a292b867",
+ "status": "passed"
+}

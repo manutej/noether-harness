@@ -1,0 +1,21 @@
+{
+ "attempts": 1,
+ "failed_tree": "db0592fea0a0eb91f4bfe6b7a705b4fded94f9dc",
+ "goal": "Cut harness steps per unit: brief refuses a red tree so no evaluator is wasted, shows evaluators the change without harness records, and SKILL.md makes gate and commit optional.",
+ "grants": [],
+ "id": "ceremony",
+ "judge_fails": 0,
+ "max_attempts": 12,
+ "proof": "grep -q 'exclude).noether' scripts/noether.py && grep -q 'Fix these before asking' scripts/noether.py && grep -q 'optional' SKILL.md",
+ "scope": [
+  "scripts/*",
+  "tests/*",
+  "SKILL.md",
+  "references/*",
+  "README.md",
+  "docs/*"
+ ],
+ "seq": 1,
+ "start": "2eaf82abebdbfa0514e0f3c1e8b27664a292b867",
+ "status": "open"
+}

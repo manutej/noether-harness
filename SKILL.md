@@ -33,16 +33,16 @@ python3 .noether/noether.py commit -m "noether: init"
 - **A commit needs the state to be at least the baseline, on every check.** Baselines are high-water marks, so slow drift cannot accumulate. Commit only with `n commit` (`--unit -` for files outside any unit, like a chain file).
 - **Exact checks veto. Nothing averages them away.** Tests that were red before you started do not block you. Tests that were green must stay green.
 - **Evaluate once, fresh, at the end of a unit.** Every evaluator must clear every axis. Each failed evaluation raises how many must, and three failures halt the unit.
-- **Never make a check pass by weakening it.** If a test is wrong, say so and ask. Exceptions name exactly what is excused and appear in the receipt: `n grant CHECK --unit U --allow 'glob' --reason "<the person's words>"`. In Claude Code a hook asks the person; elsewhere nothing enforces that, so only grant what the person actually asked for.
+- **Never make a check pass by weakening it.** If a test is wrong, say so and ask. Exceptions name exactly what is excused and appear in the receipt: `n grant CHECK --unit U --allow 'glob' --reason "<the person's words>"`. In Claude Code a hook asks the person; elsewhere nothing enforces that, so only grant what the person actually asked for. A secret finding can be excused only as an exact `file: rule` false positive.
 - **When a unit saturates or the gate halts, stop and report.** Never loosen a check to get through.
 
 ## Working a long task
 
 1. **Cut the work into units.** `n unit add ID --goal "..." --proof "<command that exits 0 only when this is true>" [--scope 'glob' ...]`. The proof states the end state, so a pure refactor is provable too (for example, that the old module is gone).
-2. **Work however suits the problem.** Run `n gate` when you want a verdict. It exits 0 pass, 1 reject, 2 halt, and rechecks only when the tree changes. Attempts count only for distinct failing trees.
-3. **Commit at stable points** with `n commit -m "..."`.
-4. **Finish a unit.** Give a subagent the output of `n brief`, and none of your reasoning. It records its verdict with `n judge`. Then run `n done`, which reruns the gate and the proof, checks the verdicts, writes the receipt and commits. With no subagents available, judge inline using `--by self`; the receipt records it.
-5. **After any reset or compaction, run `n status`.** It gives you units, the current goal, proof and scope, the last verdict, grants and the working tree. With `--claude`, it is injected automatically after compaction or resume.
+2. **Work however suits the problem.** `n gate` (optional) gives a verdict any time. It exits 0 pass, 1 reject, 2 halt, and rechecks only when the tree changes. Attempts count only for distinct failing trees. `n commit -m "..."` (optional) makes a checkpoint.
+3. **Finish a unit.** Run `n brief`, which refuses if the gate is red. Give its output to a subagent, with none of your reasoning; it records its verdict with `n judge`. Then run `n done`, which reruns the gate and the proof, checks the verdicts, writes the receipt and commits. With no subagents available, judge inline using `--by self`; the receipt records it.
+4. **Record real choices.** When you pick between live alternatives, run `n decide "what" --why "why"`. `n log` shows every decision and judgment; the record is committed with the repo, so the reasons survive resets and machines.
+5. **After any reset or compaction, run `n status`.** It gives you units, the current goal, proof and scope, the last verdict, grants, recent decisions and the working tree. With `--claude`, it is injected automatically after compaction or resume.
 
 For unattended runs in Claude Code, `n goal` prints a condition for `/goal`. Add a subagent, `/loop` or a schedule as the work needs; those are native and the harness does not replace them.
 
@@ -81,7 +81,7 @@ For work that divides, or needs several agents each under its own harness, write
 
 This is tamper-evident, not a sandbox: an agent determined to bypass it can. It proves nothing about the model, and a passing gate means only that the named quantities held. Three gaps to know:
 
-- The gate runs in your working directory, so gitignored files can affect it. Chain integration runs on a clean checkout.
+- The gate runs in your working directory, so gitignored files can affect it. It warns about gitignored test files, and chain integration runs on a clean checkout.
 - Weakening a test without removing an assertion (an early `return`, say) is left to the evaluator's `test_honesty` axis.
 - `public_api` treats a moved symbol as lost, even if re-exported. Grant it with `--allow 'module.Name*'`.
 
